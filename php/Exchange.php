@@ -153,6 +153,7 @@ class Exchange {
         'fcoinjp',
         'flowbtc',
         'foxbit',
+        'ftx',
         'fybse',
         'gateio',
         'gdax',

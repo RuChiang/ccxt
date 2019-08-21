@@ -137,6 +137,7 @@ from ccxt.fcoin import fcoin                                # noqa: F401
 from ccxt.fcoinjp import fcoinjp                            # noqa: F401
 from ccxt.flowbtc import flowbtc                            # noqa: F401
 from ccxt.foxbit import foxbit                              # noqa: F401
+from ccxt.ftx import ftx                                    # noqa: F401
 from ccxt.fybse import fybse                                # noqa: F401
 from ccxt.gateio import gateio                              # noqa: F401
 from ccxt.gdax import gdax                                  # noqa: F401
@@ -263,6 +264,7 @@ exchanges = [
     'fcoinjp',
     'flowbtc',
     'foxbit',
+    'ftx',
     'fybse',
     'gateio',
     'gdax',

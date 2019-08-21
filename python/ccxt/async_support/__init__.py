@@ -118,6 +118,7 @@ from ccxt.async_support.fcoin import fcoin                                # noqa
 from ccxt.async_support.fcoinjp import fcoinjp                            # noqa: F401
 from ccxt.async_support.flowbtc import flowbtc                            # noqa: F401
 from ccxt.async_support.foxbit import foxbit                              # noqa: F401
+from ccxt.async_support.ftx import ftx                                    # noqa: F401
 from ccxt.async_support.fybse import fybse                                # noqa: F401
 from ccxt.async_support.gateio import gateio                              # noqa: F401
 from ccxt.async_support.gdax import gdax                                  # noqa: F401
@@ -244,6 +245,7 @@ exchanges = [
     'fcoinjp',
     'flowbtc',
     'foxbit',
+    'ftx',
     'fybse',
     'gateio',
     'gdax',
