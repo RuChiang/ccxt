@@ -18,7 +18,10 @@ module.exports = class ftx extends Exchange {
             'certified': false,
             'urls': {
                 'www': 'https://ftx.com',
-                'api': 'https://ftx.com/api',
+                'api': {
+                    'public': 'https://ftx.com/api',
+                    'private': 'https://ftx.com/api',
+                },
                 'doc': 'https://github.com/ftexchange/ftx',
             },
             'version': 'v1',
@@ -58,38 +61,6 @@ module.exports = class ftx extends Exchange {
                 '1M': '1M',
             },
             'api': {
-                'web': {
-                    'get': [
-                        'exchange/public/product',
-                        'assetWithdraw/getAllAsset.html',
-                    ],
-                },
-                'wapi': {
-                    'post': [
-                        'withdraw',
-                        'sub-account/transfer',
-                    ],
-                    'get': [
-                        'depositHistory',
-                        'withdrawHistory',
-                        'depositAddress',
-                        'accountStatus',
-                        'systemStatus',
-                        'apiTradingStatus',
-                        'userAssetDribbletLog',
-                        'tradeFee',
-                        'assetDetail',
-                        'sub-account/list',
-                        'sub-account/transfer/history',
-                        'sub-account/assets',
-                    ],
-                },
-                'v3': {
-                    'get': [
-                        'ticker/price',
-                        'ticker/bookTicker',
-                    ],
-                },
                 'public': {
                     'get': [
                         'ping',
@@ -136,6 +107,7 @@ module.exports = class ftx extends Exchange {
                     'maker': 0.001,
                 },
             },
+            'currencies': {}, // to be filled manually or by fetchMarkets.  TODO: fill this up
             'commonCurrencies': {
                 'BCC': 'BCC', // kept for backward-compatibility https://github.com/ccxt/ccxt/issues/4848
                 'YOYO': 'YOYOW',
@@ -178,103 +150,159 @@ module.exports = class ftx extends Exchange {
         });
     }
 
-    nonce () {
-        return this.milliseconds () - this.options['timeDifference'];
-    }
-
-    async loadTimeDifference () {
-        const response = await this.publicGetTime ();
-        const after = this.milliseconds ();
-        this.options['timeDifference'] = parseInt (after - response['serverTime']);
-        return this.options['timeDifference'];
-    }
-
+    // Public
     async fetchMarkets (params = {}) {
-      console.log('running this');
+
         const response = await this.publicGetMarkets (params);
-        // if (this.options['adjustForTimeDifference']) {
-        //     await this.loadTimeDifference ();
-        // }
-        // const markets = this.safeValue (response, 'symbols');
-        // const result = [];
-        // for (let i = 0; i < markets.length; i++) {
-        //     const market = markets[i];
-        //     const id = this.safeString (market, 'symbol');
-        //     // "123456" is a "test symbol/market"
-        //     if (id === '123456') {
-        //         continue;
-        //     }
-        //     const baseId = market['baseAsset'];
-        //     const quoteId = market['quoteAsset'];
-        //     const base = this.safeCurrencyCode (baseId);
-        //     const quote = this.safeCurrencyCode (quoteId);
-        //     const symbol = base + '/' + quote;
-        //     const filters = this.indexBy (market['filters'], 'filterType');
-        //     const precision = {
-        //         'base': market['baseAssetPrecision'],
-        //         'quote': market['quotePrecision'],
-        //         'amount': market['baseAssetPrecision'],
-        //         'price': market['quotePrecision'],
-        //     };
-        //     const status = this.safeString (market, 'status');
-        //     const active = (status === 'TRADING');
-        //     const entry = {
-        //         'id': id,
-        //         'symbol': symbol,
-        //         'base': base,
-        //         'quote': quote,
-        //         'baseId': baseId,
-        //         'quoteId': quoteId,
-        //         'info': market,
-        //         'active': active,
-        //         'precision': precision,
-        //         'limits': {
-        //             'amount': {
-        //                 'min': Math.pow (10, -precision['amount']),
-        //                 'max': undefined,
-        //             },
-        //             'price': {
-        //                 'min': undefined,
-        //                 'max': undefined,
-        //             },
-        //             'cost': {
-        //                 'min': -1 * Math.log10 (precision['amount']),
-        //                 'max': undefined,
-        //             },
-        //         },
-        //     };
-        //     if ('PRICE_FILTER' in filters) {
-        //         const filter = filters['PRICE_FILTER'];
-        //         // PRICE_FILTER reports zero values for maxPrice
-        //         // since they updated filter types in November 2018
-        //         // https://github.com/ccxt/ccxt/issues/4286
-        //         // therefore limits['price']['max'] doesn't have any meaningful value except undefined
-        //         entry['limits']['price'] = {
-        //             'min': this.safeFloat (filter, 'minPrice'),
-        //             'max': undefined,
-        //         };
-        //         const maxPrice = this.safeFloat (filter, 'maxPrice');
-        //         if ((maxPrice !== undefined) && (maxPrice > 0)) {
-        //             entry['limits']['price']['max'] = maxPrice;
-        //         }
-        //         entry['precision']['price'] = this.precisionFromString (filter['tickSize']);
-        //     }
-        //     if ('LOT_SIZE' in filters) {
-        //         const filter = this.safeValue (filters, 'LOT_SIZE', {});
-        //         const stepSize = this.safeString (filter, 'stepSize');
-        //         entry['precision']['amount'] = this.precisionFromString (stepSize);
-        //         entry['limits']['amount'] = {
-        //             'min': this.safeFloat (filter, 'minQty'),
-        //             'max': this.safeFloat (filter, 'maxQty'),
-        //         };
-        //     }
-        //     if ('MIN_NOTIONAL' in filters) {
-        //         entry['limits']['cost']['min'] = this.safeFloat (filters['MIN_NOTIONAL'], 'minNotional');
-        //     }
-        //     result.push (entry);
-        // }
-        return response;
+        if (response.success) {
+          const markets = this.safeValue (response, 'result');
+          const result = [];
+          for (let i = 0; i < markets.length; i++) {
+            const market = markets[i];
+            const id = this.safeString (market, 'symbol');
+            // TODO: need to check how to deal with future market here
+            //
+            const baseId = market['baseCurrency'];
+            const quoteId = market['quoteCurrency'];
+            // TODO: fill up the currencies prop for safeCurrencyCode func
+            const base = this.safeCurrencyCode (baseId);
+            const quote = this.safeCurrencyCode (quoteId);
+            const symbol = base + '/' + quote;
+            const active = market.enabled;
+            const precision = {
+                'base': 8, //market['baseAssetPrecision']
+                'quote': 8, //market['quotePrecision']
+                'amount': 8, //arket['baseAssetPrecision']
+                'price': 8, //market['quotePrecision']
+            };
+
+            // TODO: need the info below
+            //     'precision': {        // number of decimal digits "after the dot"
+            //         'price': 8,       // integer or float for TICK_SIZE roundingMode, might be missing if not supplied by the exchange
+            //         'amount': 8,      // integer, might be missing if not supplied by the exchange
+            //         'cost': 8,        // integer, very few exchanges actually have it
+            //     },
+            //     'limits': {           // value limits when placing orders on this market
+            //         'amount': {
+            //             'min': 0.01,  // order amount should be > min
+            //             'max': 1000,  // order amount should be < max
+            //         },
+            //         'price': { ... }, // same min/max limits for the price of the order
+            //         'cost':  { ... }, // same limits for order cost = price * amount
+            //     },
+            //     'info':      { ... }, // the original unparsed market info from the exchange
+            const entry = {
+                'id': id,
+                'symbol': symbol,
+                'base': base,
+                'quote': quote,
+                'baseId': baseId,
+                'quoteId': quoteId,
+                'info': market,
+                'active': active,
+                'precision': precision,
+                'limits': {
+                  'amount': {
+                      'min': Math.pow (10, -precision['amount']),
+                      'max': undefined,
+                  },
+                  'price': {
+                      'min': undefined,
+                      'max': undefined,
+                  },
+                  'cost': {
+                      'min': -1 * Math.log10 (precision['amount']),
+                      'max': undefined,
+                  },                }
+            };
+            result.push (entry);
+          }
+        } else {
+          throw new ExchangeError ('markets not loaded');
+        }
+        return result;
     }
+
+    parseTicker (ticker, market = undefined) {
+        const timestamp = this.safeInteger (ticker, 'closeTime');
+        const symbol = this.findSymbol (this.safeString (ticker, 'symbol'), market);
+        const last = this.safeFloat (ticker, 'lastPrice');
+        return {
+            'symbol': symbol,
+            'timestamp': timestamp,
+            'datetime': this.iso8601 (timestamp),
+            'high': this.safeFloat (ticker, 'highPrice'),
+            'low': this.safeFloat (ticker, 'lowPrice'),
+            'bid': this.safeFloat (ticker, 'bidPrice'),
+            'bidVolume': this.safeFloat (ticker, 'bidQty'),
+            'ask': this.safeFloat (ticker, 'askPrice'),
+            'askVolume': this.safeFloat (ticker, 'askQty'),
+            'vwap': this.safeFloat (ticker, 'weightedAvgPrice'),
+            'open': this.safeFloat (ticker, 'openPrice'),
+            'close': last,
+            'last': last,
+            'previousClose': this.safeFloat (ticker, 'prevClosePrice'), // previous day close
+            'change': this.safeFloat (ticker, 'priceChange'),
+            'percentage': this.safeFloat (ticker, 'priceChangePercent'),
+            'average': undefined,
+            'baseVolume': this.safeFloat (ticker, 'volume'),
+            'quoteVolume': this.safeFloat (ticker, 'quoteVolume'),
+            'info': ticker,
+        };
+    }
+
+    async fetchTicker (symbol, params = {}) {
+        await this.loadMarkets ();
+        const market = this.market (symbol);
+        const request = {
+            'symbol': market['id'],
+        };
+        const response = await this.publicGetTicker24hr (this.extend (request, params));
+        return this.parseTicker (response, market);
+    }
+
+    parseTickers (rawTickers, symbols = undefined) {
+        const tickers = [];
+        for (let i = 0; i < rawTickers.length; i++) {
+            tickers.push (this.parseTicker (rawTickers[i]));
+        }
+        return this.filterByArray (tickers, 'symbol', symbols);
+    }
+
+    async fetchTickers (symbols = undefined, params = {}) {
+        await this.loadMarkets ();
+        const method = this.options['fetchTickersMethod'];
+        const response = await this[method] (params);
+        return this.parseTickers (response, symbols);
+    }
+
+    async fetchOrderBook (symbol, limit = undefined, params = {}) {
+        await this.loadMarkets ();
+        const market = this.market (symbol);
+        const request = {
+            'symbol': market['id'],
+        };
+        if (limit !== undefined) {
+            request['limit'] = limit; // default = maximum = 100
+        }
+        const response = await this.publicGetDepth (this.extend (request, params));
+        const orderbook = this.parseOrderBook (response);
+        orderbook['nonce'] = this.safeInteger (response, 'lastUpdateId');
+        return orderbook;
+    }
+
+    async fetchStatus (params = {}) {
+        const systemStatus = await this.wapiGetSystemStatus ();
+        const status = this.safeValue (systemStatus, 'status');
+        if (status !== undefined) {
+            this.status = this.extend (this.status, {
+                'status': status === 0 ? 'ok' : 'maintenance',
+                'updated': this.milliseconds (),
+            });
+        }
+        return this.status;
+    }
+
 
     calculateFee (symbol, type, side, amount, price, takerOrMaker = 'taker', params = {}) {
         const market = this.markets[symbol];
@@ -314,89 +342,9 @@ module.exports = class ftx extends Exchange {
         return this.parseBalance (result);
     }
 
-    async fetchOrderBook (symbol, limit = undefined, params = {}) {
-        await this.loadMarkets ();
-        const market = this.market (symbol);
-        const request = {
-            'symbol': market['id'],
-        };
-        if (limit !== undefined) {
-            request['limit'] = limit; // default = maximum = 100
-        }
-        const response = await this.publicGetDepth (this.extend (request, params));
-        const orderbook = this.parseOrderBook (response);
-        orderbook['nonce'] = this.safeInteger (response, 'lastUpdateId');
-        return orderbook;
-    }
-
-    parseTicker (ticker, market = undefined) {
-        const timestamp = this.safeInteger (ticker, 'closeTime');
-        const symbol = this.findSymbol (this.safeString (ticker, 'symbol'), market);
-        const last = this.safeFloat (ticker, 'lastPrice');
-        return {
-            'symbol': symbol,
-            'timestamp': timestamp,
-            'datetime': this.iso8601 (timestamp),
-            'high': this.safeFloat (ticker, 'highPrice'),
-            'low': this.safeFloat (ticker, 'lowPrice'),
-            'bid': this.safeFloat (ticker, 'bidPrice'),
-            'bidVolume': this.safeFloat (ticker, 'bidQty'),
-            'ask': this.safeFloat (ticker, 'askPrice'),
-            'askVolume': this.safeFloat (ticker, 'askQty'),
-            'vwap': this.safeFloat (ticker, 'weightedAvgPrice'),
-            'open': this.safeFloat (ticker, 'openPrice'),
-            'close': last,
-            'last': last,
-            'previousClose': this.safeFloat (ticker, 'prevClosePrice'), // previous day close
-            'change': this.safeFloat (ticker, 'priceChange'),
-            'percentage': this.safeFloat (ticker, 'priceChangePercent'),
-            'average': undefined,
-            'baseVolume': this.safeFloat (ticker, 'volume'),
-            'quoteVolume': this.safeFloat (ticker, 'quoteVolume'),
-            'info': ticker,
-        };
-    }
-
-    async fetchStatus (params = {}) {
-        const systemStatus = await this.wapiGetSystemStatus ();
-        const status = this.safeValue (systemStatus, 'status');
-        if (status !== undefined) {
-            this.status = this.extend (this.status, {
-                'status': status === 0 ? 'ok' : 'maintenance',
-                'updated': this.milliseconds (),
-            });
-        }
-        return this.status;
-    }
-
-    async fetchTicker (symbol, params = {}) {
-        await this.loadMarkets ();
-        const market = this.market (symbol);
-        const request = {
-            'symbol': market['id'],
-        };
-        const response = await this.publicGetTicker24hr (this.extend (request, params));
-        return this.parseTicker (response, market);
-    }
-
-    parseTickers (rawTickers, symbols = undefined) {
-        const tickers = [];
-        for (let i = 0; i < rawTickers.length; i++) {
-            tickers.push (this.parseTicker (rawTickers[i]));
-        }
-        return this.filterByArray (tickers, 'symbol', symbols);
-    }
-
     async fetchBidsAsks (symbols = undefined, params = {}) {
         await this.loadMarkets ();
         const response = await this.publicGetTickerBookTicker (params);
-        return this.parseTickers (response, symbols);
-    }
-
-    async fetchTickers (symbols = undefined, params = {}) {
-        await this.loadMarkets ();
-        const method = this.options['fetchTickersMethod'];
-        const response = await this[method] (params);
         return this.parseTickers (response, symbols);
     }
 
