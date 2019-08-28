@@ -77,6 +77,9 @@ module.exports = class ftx extends Exchange {
                         'ticker/bookTicker',
                         'exchangeInfo',
                         'markets',
+                        'futures/{market}/mark_candles',
+                        'markets/{market}/candles',
+                        'markets/{market}/orderbook',
                     ],
                     'put': [ 'userDataStream' ],
                     'post': [ 'userDataStream' ],
@@ -152,101 +155,102 @@ module.exports = class ftx extends Exchange {
 
     // Public
     async fetchMarkets (params = {}) {
-
         const response = await this.publicGetMarkets (params);
+        const result = [];
         if (response.success) {
-          const markets = this.safeValue (response, 'result');
-          const result = [];
-          for (let i = 0; i < markets.length; i++) {
-            const market = markets[i];
-            const id = this.safeString (market, 'symbol');
-            // TODO: need to check how to deal with future market here
-            //
-            const baseId = market['baseCurrency'];
-            const quoteId = market['quoteCurrency'];
-            // TODO: fill up the currencies prop for safeCurrencyCode func
-            const base = this.safeCurrencyCode (baseId);
-            const quote = this.safeCurrencyCode (quoteId);
-            const symbol = base + '/' + quote;
-            const active = market.enabled;
-            const precision = {
-                'base': 8, //market['baseAssetPrecision']
-                'quote': 8, //market['quotePrecision']
-                'amount': 8, //arket['baseAssetPrecision']
-                'price': 8, //market['quotePrecision']
-            };
-
-            // TODO: need the info below
-            //     'precision': {        // number of decimal digits "after the dot"
-            //         'price': 8,       // integer or float for TICK_SIZE roundingMode, might be missing if not supplied by the exchange
-            //         'amount': 8,      // integer, might be missing if not supplied by the exchange
-            //         'cost': 8,        // integer, very few exchanges actually have it
-            //     },
-            //     'limits': {           // value limits when placing orders on this market
-            //         'amount': {
-            //             'min': 0.01,  // order amount should be > min
-            //             'max': 1000,  // order amount should be < max
-            //         },
-            //         'price': { ... }, // same min/max limits for the price of the order
-            //         'cost':  { ... }, // same limits for order cost = price * amount
-            //     },
-            //     'info':      { ... }, // the original unparsed market info from the exchange
-            const entry = {
-                'id': id,
-                'symbol': symbol,
-                'base': base,
-                'quote': quote,
-                'baseId': baseId,
-                'quoteId': quoteId,
-                'info': market,
-                'active': active,
-                'precision': precision,
-                'limits': {
-                  'amount': {
-                      'min': Math.pow (10, -precision['amount']),
-                      'max': undefined,
-                  },
-                  'price': {
-                      'min': undefined,
-                      'max': undefined,
-                  },
-                  'cost': {
-                      'min': -1 * Math.log10 (precision['amount']),
-                      'max': undefined,
-                  },                }
-            };
-            result.push (entry);
-          }
+            const markets = this.safeValue (response, 'result');
+            for (let i = 0; i < markets.length; i++) {
+                const market = markets[i];
+                const id = this.safeString (market, 'name');
+                // TODO: need to check how to deal with future market here
+                const baseId = market['baseCurrency'];
+                const quoteId = market['quoteCurrency'];
+                const type = market['type'];
+                let symbol;
+                let base;
+                let quote;
+                if (type == 'future') {
+                    symbol = market['name'];
+                } else {
+                    base = this.safeCurrencyCode (baseId);
+                    quote = this.safeCurrencyCode (quoteId);
+                    symbol = base + '/' + quote;
+                }
+                const active = market.enabled;
+                let priceIncrement = this.safeFloat (market, 'priceIncrement');
+                let priceIncrementDecimal = priceIncrement.toString().split('.')[1];
+                if (priceIncrementDecimal === undefined) {
+                    priceIncrementDecimal = 0;
+                } else {
+                    priceIncrementDecimal = priceIncrementDecimal.length;
+                }
+                let sizeIncrement = this.safeFloat (market, 'sizeIncrement');
+                let sizeIncrementDecimal = sizeIncrement.toString().split('.')[1];
+                if (sizeIncrementDecimal === undefined) {
+                    sizeIncrementDecimal = 0;
+                } else {
+                    sizeIncrementDecimal = sizeIncrementDecimal.length;
+                }
+                const precision = {
+                    'amount': sizeIncrementDecimal,
+                    'price': priceIncrementDecimal,
+                };
+                const entry = {
+                    'id': id,
+                    'symbol': symbol,
+                    'base': base,
+                    'quote': quote,
+                    'baseId': baseId,
+                    'quoteId': quoteId,
+                    'info': market,
+                    'active': active,
+                    'precision': precision,
+                    'limits': {
+                        'amount': {
+                            'min': undefined,
+                            'max': undefined,
+                        },
+                        'price': {
+                            'min': undefined,
+                            'max': undefined,
+                        },
+                        'cost': {
+                            'min': undefined,
+                            'max': undefined,
+                        },
+                    },
+                };
+                result.push (entry);
+            }
+            return result;
         } else {
           throw new ExchangeError ('markets not loaded');
         }
-        return result;
     }
 
     parseTicker (ticker, market = undefined) {
-        const timestamp = this.safeInteger (ticker, 'closeTime');
-        const symbol = this.findSymbol (this.safeString (ticker, 'symbol'), market);
-        const last = this.safeFloat (ticker, 'lastPrice');
+        const timestamp = this.safeInteger (ticker, 'time');
+        const symbol = market['symbol'];
         return {
             'symbol': symbol,
             'timestamp': timestamp,
             'datetime': this.iso8601 (timestamp),
-            'high': this.safeFloat (ticker, 'highPrice'),
-            'low': this.safeFloat (ticker, 'lowPrice'),
-            'bid': this.safeFloat (ticker, 'bidPrice'),
-            'bidVolume': this.safeFloat (ticker, 'bidQty'),
-            'ask': this.safeFloat (ticker, 'askPrice'),
-            'askVolume': this.safeFloat (ticker, 'askQty'),
-            'vwap': this.safeFloat (ticker, 'weightedAvgPrice'),
-            'open': this.safeFloat (ticker, 'openPrice'),
-            'close': last,
-            'last': last,
-            'previousClose': this.safeFloat (ticker, 'prevClosePrice'), // previous day close
-            'change': this.safeFloat (ticker, 'priceChange'),
-            'percentage': this.safeFloat (ticker, 'priceChangePercent'),
+            'high': this.safeFloat (ticker, 'high'),
+            'low': this.safeFloat (ticker, 'low'),
+            'bid': this.safeFloat (market['info'], 'bid'),
+            'bidVolume': undefined,
+            'ask': this.safeFloat (market['info'], 'ask'),
+            'askVolume': undefined,
+            'vwap': undefined,
+            'open': this.safeFloat (ticker, 'open'),
+            'close': this.safeFloat (ticker, 'close'),
+            'last': this.safeFloat (market['info'], 'last'),
+            'previousClose': undefined,
+            'change': this.safeFloat (market['info'], 'priceIncrement'),
+            'percentage': undefined,
             'average': undefined,
-            'baseVolume': this.safeFloat (ticker, 'volume'),
-            'quoteVolume': this.safeFloat (ticker, 'quoteVolume'),
+            'baseVolume': this.safeFloat (ticker, 'volume'), // ftx only gives one volumne
+            'quoteVolume': this.safeFloat (ticker, 'volume'),
             'info': ticker,
         };
     }
@@ -254,11 +258,23 @@ module.exports = class ftx extends Exchange {
     async fetchTicker (symbol, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
-        const request = {
-            'symbol': market['id'],
-        };
-        const response = await this.publicGetTicker24hr (this.extend (request, params));
-        return this.parseTicker (response, market);
+        let response;
+        let end = Math.round(new Date().getTime() / 1000);
+        let start = Math.round(new Date().getTime() / 1000 - 24 * 60 * 60);
+        let request = {};
+        request['market'] = market['id'];
+         params = this.extend ({
+            'start_time': start,
+            'end_time': end,
+            'resolution': 86400,
+        }, params);
+        //check if it is a future market
+        if (market['baseId'] === null) {
+            response = await this.publicGetFuturesMarketMarkCandles (this.extend (request, params));
+        } else {
+            response = await this.publicGetMarketsMarketCandles (this.extend (request, params));
+        }
+        return this.parseTicker (response.result[0], market);
     }
 
     parseTickers (rawTickers, symbols = undefined) {
@@ -276,17 +292,17 @@ module.exports = class ftx extends Exchange {
         return this.parseTickers (response, symbols);
     }
 
-    async fetchOrderBook (symbol, limit = undefined, params = {}) {
+    async fetchOrderBook (symbol, limit = 20, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
         const request = {
-            'symbol': market['id'],
+            'market': market['id'],
         };
         if (limit !== undefined) {
-            request['limit'] = limit; // default = maximum = 100
+            request['depth'] = limit; // default = maximum = 100
         }
-        const response = await this.publicGetDepth (this.extend (request, params));
-        const orderbook = this.parseOrderBook (response);
+        const response = await this.publicGetMarketsMarketOrderbook (this.extend (request, params));
+        const orderbook = this.parseOrderBook (response.result);
         orderbook['nonce'] = this.safeInteger (response, 'lastUpdateId');
         return orderbook;
     }
@@ -1274,12 +1290,36 @@ module.exports = class ftx extends Exchange {
         }
     }
 
-    async request (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
-        const response = await this.fetch2 (path, api, method, params, headers, body);
-        // a workaround for {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action."}
-        if ((api === 'private') || (api === 'wapi')) {
-            this.options['hasAlreadyAuthenticatedSuccessfully'] = true;
+    sign (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
+        let request = '/' + this.implodeParams (path, params);
+        let query = this.omit (params, this.extractParams (path));
+        let url = this.urls['api'][api] + request;
+        if ((api === 'public') || (path.indexOf ('/hist') >= 0)) {
+            if (Object.keys (query).length) {
+                const suffix = '?' + this.urlencode (query);
+                url += suffix;
+                request += suffix;
+            }
         }
-        return response;
+        if (api === 'private') {
+            this.checkRequiredCredentials ();
+            const nonce = this.nonce ();
+            query = this.extend ({
+                'nonce': nonce.toString (),
+                'request': request,
+            }, query);
+            body = this.json (query);
+            query = this.encode (body);
+            const payload = this.stringToBase64 (query);
+            const secret = this.encode (this.secret);
+            const signature = this.hmac (payload, secret, 'sha384');
+            headers = {
+                'X-BFX-APIKEY': this.apiKey,
+                'X-BFX-PAYLOAD': this.decode (payload),
+                'X-BFX-SIGNATURE': signature,
+            };
+        }
+        return { 'url': url, 'method': method, 'body': body, 'headers': headers };
     }
+
 };
