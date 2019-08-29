@@ -31,7 +31,7 @@ module.exports = class ftx extends Exchange {
                 'CORS': false,
                 'fetchTickers': true,
                 'fetchOHLCV': true,
-                'fetchCurrencies': false,
+                'fetchCurrencies': true,
                 'fetchMyTrades': true,
                 'fetchOrder': true,
                 'fetchOrders': true,
@@ -76,6 +76,7 @@ module.exports = class ftx extends Exchange {
                         'markets/{market}/candles',
                         'markets/{market}/orderbook',
                         'markets/{market}/trades',
+                        'coins',
                     ],
                     'put': [ 'userDataStream' ],
                     'post': [ 'userDataStream' ],
@@ -309,6 +310,27 @@ module.exports = class ftx extends Exchange {
             orderbook['datetime'] = undefined;
             orderbook['nonce'] = undefined;
             return orderbook;
+        } else {
+            throw new ExchangeError ('data not returned');
+        }
+    }
+
+    async fetchCurrencies (params = {}) {
+        const response = await this.publicGetCoins (params);
+        if (response.success) {
+            let currencies = response.result;
+            const result = {};
+            for (let i = 0; i < currencies.length; i++) {
+                const currency = currencies[i];
+                const id = this.safeString (currency, 'id');
+                const code = this.safeCurrencyCode (id);
+                result[code] = {
+                    'id': id,
+                    'code': code,
+                    'info': currency,
+                };
+            }
+            return result;
         } else {
             throw new ExchangeError ('data not returned');
         }
