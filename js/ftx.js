@@ -29,7 +29,6 @@ module.exports = class ftx extends Exchange {
             'has': {
                 'fetchDepositAddress': true,
                 'CORS': false,
-                'fetchBidsAsks': true,
                 'fetchTickers': true,
                 'fetchOHLCV': true,
                 'fetchCurrencies': false,
@@ -45,6 +44,7 @@ module.exports = class ftx extends Exchange {
                 'fetchTransactions': false,
                 'fetchStatus': false,
                 'fetchTrades': true,
+                'fetchOrderBook': true,
             },
             'timeframes': {
                 '15s': '15',
@@ -283,8 +283,13 @@ module.exports = class ftx extends Exchange {
 
     async fetchTickers (symbols = undefined, params = {}) {
         await this.loadMarkets ();
-        const method = this.options['fetchTickersMethod'];
-        const response = await this[method] (params);
+        const market = this.market(symbol);
+        let response;
+        if (market['baseId'] === null) {
+
+        } else {
+
+        }
         return this.parseTickers (response, symbols);
     }
 
@@ -345,12 +350,6 @@ module.exports = class ftx extends Exchange {
             result[code] = account;
         }
         return this.parseBalance (result);
-    }
-
-    async fetchBidsAsks (symbols = undefined, params = {}) {
-        await this.loadMarkets ();
-        const response = await this.publicGetTickerBookTicker (params);
-        return this.parseTickers (response, symbols);
     }
 
     parseOHLCV (ohlcv, market = undefined, timeframe = '1m', since = undefined, limit = undefined) {
