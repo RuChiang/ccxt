@@ -32,6 +32,7 @@ module.exports = class ftx extends Exchange {
                 'fetchBidsAsks': true,
                 'fetchTickers': true,
                 'fetchOHLCV': true,
+                'fetchCurrencies': false,
                 'fetchMyTrades': true,
                 'fetchOrder': true,
                 'fetchOrders': true,
@@ -42,23 +43,17 @@ module.exports = class ftx extends Exchange {
                 'fetchDeposits': true,
                 'fetchWithdrawals': true,
                 'fetchTransactions': false,
+                'fetchStatus': false,
+                'fetchTrades': true,
             },
             'timeframes': {
-                '1m': '1m',
-                '3m': '3m',
-                '5m': '5m',
-                '15m': '15m',
-                '30m': '30m',
-                '1h': '1h',
-                '2h': '2h',
-                '4h': '4h',
-                '6h': '6h',
-                '8h': '8h',
-                '12h': '12h',
-                '1d': '1d',
-                '3d': '3d',
-                '1w': '1w',
-                '1M': '1M',
+                '15s': '15',
+                '1m': '60',
+                '5m': '300',
+                '15m': '900',
+                '1h': '3600',
+                '4h': '14400',
+                '24h': '86400',
             },
             'api': {
                 'public': {
@@ -80,6 +75,7 @@ module.exports = class ftx extends Exchange {
                         'futures/{market}/mark_candles',
                         'markets/{market}/candles',
                         'markets/{market}/orderbook',
+                        'markets/{market}/trades',
                     ],
                     'put': [ 'userDataStream' ],
                     'post': [ 'userDataStream' ],
@@ -298,27 +294,20 @@ module.exports = class ftx extends Exchange {
         const request = {
             'market': market['id'],
         };
-        if (limit !== undefined) {
+        if (limit !== undefined && limit >= 20 && limit <= 100) {
             request['depth'] = limit; // default = maximum = 100
         }
         const response = await this.publicGetMarketsMarketOrderbook (this.extend (request, params));
-        const orderbook = this.parseOrderBook (response.result);
-        orderbook['nonce'] = this.safeInteger (response, 'lastUpdateId');
-        return orderbook;
-    }
-
-    async fetchStatus (params = {}) {
-        const systemStatus = await this.wapiGetSystemStatus ();
-        const status = this.safeValue (systemStatus, 'status');
-        if (status !== undefined) {
-            this.status = this.extend (this.status, {
-                'status': status === 0 ? 'ok' : 'maintenance',
-                'updated': this.milliseconds (),
-            });
+        if (response.success) {
+            const orderbook = response.result;
+            orderbook['timestamp'] = undefined;
+            orderbook['datetime'] = undefined;
+            orderbook['nonce'] = undefined;
+            return orderbook;
+        } else {
+            throw new ExchangeError ('data not returned');
         }
-        return this.status;
     }
-
 
     calculateFee (symbol, type, side, amount, price, takerOrMaker = 'taker', params = {}) {
         const market = this.markets[symbol];
@@ -366,112 +355,54 @@ module.exports = class ftx extends Exchange {
 
     parseOHLCV (ohlcv, market = undefined, timeframe = '1m', since = undefined, limit = undefined) {
         return [
-            ohlcv[0],
-            parseFloat (ohlcv[1]),
-            parseFloat (ohlcv[2]),
-            parseFloat (ohlcv[3]),
-            parseFloat (ohlcv[4]),
-            parseFloat (ohlcv[5]),
+            ohlcv.time,
+            ohlcv.open,
+            ohlcv.high,
+            ohlcv.low,
+            ohlcv.close,
+            ohlcv.volume,
         ];
     }
 
-    async fetchOHLCV (symbol, timeframe = '1m', since = undefined, limit = undefined, params = {}) {
+    async fetchOHLCV (symbol, timeframe = '5m', start_time = undefined, end_time = undefined, limit = undefined, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
+        let response;
         const request = {
-            'symbol': market['id'],
-            'interval': this.timeframes[timeframe],
+            'market': market['id'],
+            'resolution': this.timeframes[timeframe],
         };
-        if (since !== undefined) {
-            request['startTime'] = since;
-        }
         if (limit !== undefined) {
-            request['limit'] = limit; // default == max == 500
+            request['limit'] = limit;
         }
-        const response = await this.publicGetKlines (this.extend (request, params));
-        return this.parseOHLCVs (response, market, timeframe, since, limit);
+        if (start_time !== undefined) {
+            request['start_time'] = start_time;
+        }
+        if (end_time !== undefined) {
+            request['end_time'] = end_time;
+        }
+        //check if it is a future market
+        if (market['baseId'] === null) {
+            response = await this.publicGetFuturesMarketMarkCandles (this.extend (request, params));
+        } else {
+            response = await this.publicGetMarketsMarketCandles (this.extend (request, params));
+        }
+        if (response.success) {
+            return this.parseOHLCVs (response.result, market, timeframe, since, limit);
+        } else {
+            throw new ExchangeError ('data not returned');
+        }
     }
 
     parseTrade (trade, market = undefined) {
-        if ('isDustTrade' in trade) {
-            return this.parseDustTrade (trade, market);
-        }
-        //
-        // aggregate trades
-        // https://github.com/binance-exchange/binance-official-api-docs/blob/master/rest-api.md#compressedaggregate-trades-list
-        //
-        //     {
-        //         "a": 26129,         // Aggregate tradeId
-        //         "p": "0.01633102",  // Price
-        //         "q": "4.70443515",  // Quantity
-        //         "f": 27781,         // First tradeId
-        //         "l": 27781,         // Last tradeId
-        //         "T": 1498793709153, // Timestamp
-        //         "m": true,          // Was the buyer the maker?
-        //         "M": true           // Was the trade the best price match?
-        //     }
-        //
-        // recent public trades and old public trades
-        // https://github.com/binance-exchange/binance-official-api-docs/blob/master/rest-api.md#recent-trades-list
-        // https://github.com/binance-exchange/binance-official-api-docs/blob/master/rest-api.md#old-trade-lookup-market_data
-        //
-        //     {
-        //         "id": 28457,
-        //         "price": "4.00000100",
-        //         "qty": "12.00000000",
-        //         "time": 1499865549590,
-        //         "isBuyerMaker": true,
-        //         "isBestMatch": true
-        //     }
-        //
-        // private trades
-        // https://github.com/binance-exchange/binance-official-api-docs/blob/master/rest-api.md#account-trade-list-user_data
-        //
-        //     {
-        //         "symbol": "BNBBTC",
-        //         "id": 28457,
-        //         "orderId": 100234,
-        //         "price": "4.00000100",
-        //         "qty": "12.00000000",
-        //         "commission": "10.10000000",
-        //         "commissionAsset": "BNB",
-        //         "time": 1499865549590,
-        //         "isBuyer": true,
-        //         "isMaker": false,
-        //         "isBestMatch": true
-        //     }
-        //
-        const timestamp = this.safeInteger2 (trade, 'T', 'time');
-        const price = this.safeFloat2 (trade, 'p', 'price');
-        const amount = this.safeFloat2 (trade, 'q', 'qty');
-        const id = this.safeString2 (trade, 'a', 'id');
-        let side = undefined;
-        const orderId = this.safeString (trade, 'orderId');
-        if ('m' in trade) {
-            side = trade['m'] ? 'sell' : 'buy'; // this is reversed intentionally
-        } else if ('isBuyerMaker' in trade) {
-            side = trade['isBuyerMaker'] ? 'sell' : 'buy';
-        } else {
-            if ('isBuyer' in trade) {
-                side = (trade['isBuyer']) ? 'buy' : 'sell'; // this is a true side
-            }
-        }
+        const timestamp = this.safeInteger (trade, 'timestamp');
+        const price = this.safeFloat (trade, 'price');
+        const amount = this.safeFloat (trade, 'size');
+        const id = this.safeString (market, 'id');
+        const orderId = this.safeString (trade, 'id');
+        let side = this.safeString(trade, 'side');
         let fee = undefined;
-        if ('commission' in trade) {
-            fee = {
-                'cost': this.safeFloat (trade, 'commission'),
-                'currency': this.safeCurrencyCode (this.safeString (trade, 'commissionAsset')),
-            };
-        }
-        let takerOrMaker = undefined;
-        if ('isMaker' in trade) {
-            takerOrMaker = trade['isMaker'] ? 'maker' : 'taker';
-        }
         let symbol = undefined;
-        if (market === undefined) {
-            const marketId = this.safeString (trade, 'symbol');
-            market = this.safeValue (this.markets_by_id, marketId);
-        }
         if (market !== undefined) {
             symbol = market['symbol'];
         }
@@ -483,75 +414,40 @@ module.exports = class ftx extends Exchange {
             'id': id,
             'order': orderId,
             'type': undefined,
-            'takerOrMaker': takerOrMaker,
+            'takerOrMaker': undefined,
             'side': side,
             'price': price,
             'amount': amount,
             'cost': price * amount,
-            'fee': fee,
+            'fee': undefined,
         };
     }
 
-    async fetchTrades (symbol, since = undefined, limit = undefined, params = {}) {
+    async fetchTrades (symbol, start_time = undefined, end_time = undefined, limit = undefined, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
         const request = {
-            'symbol': market['id'],
-            // 'fromId': 123,    // ID to get aggregate trades from INCLUSIVE.
-            // 'startTime': 456, // Timestamp in ms to get aggregate trades from INCLUSIVE.
-            // 'endTime': 789,   // Timestamp in ms to get aggregate trades until INCLUSIVE.
-            // 'limit': 500,     // default = 500, maximum = 1000
+            'market': market['id'],
         };
-        if (this.options['fetchTradesMethod'] === 'publicGetAggTrades') {
-            if (since !== undefined) {
-                request['startTime'] = since;
-                request['endTime'] = this.sum (since, 3600000);
-            }
+        if (start_time !== undefined) {
+            request['start_time'] = start_time;
+        }
+        if (end_time !== undefined) {
+            request['end_time'] = end_time;
         }
         if (limit !== undefined) {
-            request['limit'] = limit; // default = 500, maximum = 1000
+            request['limit'] = limit;
         }
-        //
-        // Caveats:
-        // - default limit (500) applies only if no other parameters set, trades up
-        //   to the maximum limit may be returned to satisfy other parameters
-        // - if both limit and time window is set and time window contains more
-        //   trades than the limit then the last trades from the window are returned
-        // - 'tradeId' accepted and returned by this method is "aggregate" trade id
-        //   which is different from actual trade id
-        // - setting both fromId and time window results in error
-        const method = this.safeValue (this.options, 'fetchTradesMethod', 'publicGetTrades');
-        const response = await this[method] (this.extend (request, params));
-        //
-        // aggregate trades
-        //
-        //     [
-        //         {
-        //             "a": 26129,         // Aggregate tradeId
-        //             "p": "0.01633102",  // Price
-        //             "q": "4.70443515",  // Quantity
-        //             "f": 27781,         // First tradeId
-        //             "l": 27781,         // Last tradeId
-        //             "T": 1498793709153, // Timestamp
-        //             "m": true,          // Was the buyer the maker?
-        //             "M": true           // Was the trade the best price match?
-        //         }
-        //     ]
-        //
-        // recent public trades and historical public trades
-        //
-        //     [
-        //         {
-        //             "id": 28457,
-        //             "price": "4.00000100",
-        //             "qty": "12.00000000",
-        //             "time": 1499865549590,
-        //             "isBuyerMaker": true,
-        //             "isBestMatch": true
-        //         }
-        //     ]
-        //
-        return this.parseTrades (response, market, since, limit);
+        const response = await this.publicGetMarketsMarketTrades (this.extend (request, params));
+        //add timestamps into every trade obj
+        if (response.success) {
+            for (let i = 0; i < response.result.length; i++) {
+                response.result[i]['timestamp'] = new Date(response.result[i]['time']).getTime();
+            }
+            return this.parseTrades (response.result, market, since, limit);
+        } else {
+            throw new ExchangeError ('data not returned');
+        }
     }
 
     parseOrderStatus (status) {
