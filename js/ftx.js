@@ -29,7 +29,8 @@ module.exports = class ftx extends Exchange {
             'has': {
                 'fetchDepositAddress': true,
                 'CORS': false,
-                'fetchTickers': true,
+                'fetchTickers': false,
+                'fetchTicker': true,
                 'fetchOHLCV': true,
                 'fetchCurrencies': true,
                 'fetchMyTrades': true,
@@ -58,29 +59,15 @@ module.exports = class ftx extends Exchange {
             'api': {
                 'public': {
                     'get': [
-                        'ping',
-                        'time',
-                        'depth',
-                        'trades',
-                        'aggTrades',
-                        'historicalTrades',
-                        'klines',
-                        'ticker/24hr',
-                        'ticker/allPrices',
-                        'ticker/allBookTickers',
-                        'ticker/price',
-                        'ticker/bookTicker',
-                        'exchangeInfo',
                         'markets',
                         'futures/{market}/mark_candles',
                         'markets/{market}/candles',
                         'markets/{market}/orderbook',
                         'markets/{market}/trades',
                         'coins',
+                        'futures/{market}',
+                        'futures/{market}/stats',
                     ],
-                    'put': [ 'userDataStream' ],
-                    'post': [ 'userDataStream' ],
-                    'delete': [ 'userDataStream' ],
                 },
                 'private': {
                     'get': [
@@ -167,13 +154,13 @@ module.exports = class ftx extends Exchange {
                 let base;
                 let quote;
                 if (type == 'future') {
-                    symbol = market['name'];
+                    symbol = this.safeString (market, 'name');
                 } else {
                     base = this.safeCurrencyCode (baseId);
                     quote = this.safeCurrencyCode (quoteId);
                     symbol = base + '/' + quote;
                 }
-                const active = market.enabled;
+                const active = this.safeValue(market, 'enabled');
                 let priceIncrement = this.safeFloat (market, 'priceIncrement');
                 let priceIncrementDecimal = priceIncrement.toString().split('.')[1];
                 if (priceIncrementDecimal === undefined) {
@@ -230,8 +217,8 @@ module.exports = class ftx extends Exchange {
         const symbol = market['symbol'];
         return {
             'symbol': symbol,
-            'timestamp': timestamp,
-            'datetime': this.iso8601 (timestamp),
+            'timestamp': undefined,
+            'datetime': undefined,
             'high': this.safeFloat (ticker, 'high'),
             'low': this.safeFloat (ticker, 'low'),
             'bid': this.safeFloat (market['info'], 'bid'),
@@ -239,15 +226,14 @@ module.exports = class ftx extends Exchange {
             'ask': this.safeFloat (market['info'], 'ask'),
             'askVolume': undefined,
             'vwap': undefined,
-            'open': this.safeFloat (ticker, 'open'),
-            'close': this.safeFloat (ticker, 'close'),
+            'open': undefined,
+            'close': undefined,
             'last': this.safeFloat (market['info'], 'last'),
             'previousClose': undefined,
-            'change': this.safeFloat (market['info'], 'priceIncrement'),
+            'change': this.safeFloat (ticker, 'change'),
             'percentage': undefined,
             'average': undefined,
-            'baseVolume': this.safeFloat (ticker, 'volume'), // ftx only gives one volumne
-            'quoteVolume': this.safeFloat (ticker, 'volume'),
+            'volume': this.safeFloat (ticker, 'volume'),
             'info': ticker,
         };
     }
@@ -255,23 +241,20 @@ module.exports = class ftx extends Exchange {
     async fetchTicker (symbol, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
-        let response;
-        let end = Math.round(new Date().getTime() / 1000);
-        let start = Math.round(new Date().getTime() / 1000 - 24 * 60 * 60);
-        let request = {};
-        request['market'] = market['id'];
-         params = this.extend ({
-            'start_time': start,
-            'end_time': end,
-            'resolution': 86400,
-        }, params);
-        //check if it is a future market
-        if (market['baseId'] === null) {
-            response = await this.publicGetFuturesMarketMarkCandles (this.extend (request, params));
-        } else {
-            response = await this.publicGetMarketsMarketCandles (this.extend (request, params));
+        let response = {};
+        if (market['info']['type'] == 'future') {
+            let request = {};
+            request['market'] = symbol;
+            let future = publicGetFuturesMarket(this.extend (request, params));
+            let futureStatus = publicGetFuturesMarketStats(this.extend (request, params));
+            if (future.success && futureStatus.success) {
+                response['change'] = future['result']['change24h'];
+                response['volume'] = futureStatus['result']['volume'];
+            } else {
+                throw new ExchangeError ('data not returned');
+            }
         }
-        return this.parseTicker (response.result[0], market);
+        return this.parseTicker (response, market);
     }
 
     parseTickers (rawTickers, symbols = undefined) {
@@ -280,18 +263,6 @@ module.exports = class ftx extends Exchange {
             tickers.push (this.parseTicker (rawTickers[i]));
         }
         return this.filterByArray (tickers, 'symbol', symbols);
-    }
-
-    async fetchTickers (symbols = undefined, params = {}) {
-        await this.loadMarkets ();
-        const market = this.market(symbol);
-        let response;
-        if (market['baseId'] === null) {
-
-        } else {
-
-        }
-        return this.parseTickers (response, symbols);
     }
 
     async fetchOrderBook (symbol, limit = 20, params = {}) {
