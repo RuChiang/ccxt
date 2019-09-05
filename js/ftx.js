@@ -79,7 +79,7 @@ module.exports = class ftx extends Exchange {
                     ],
                     'post': [
                         'orders',
-                        'order/test',
+                        'conditional_orders',
                     ],
                     'delete': [
                         'order',
@@ -422,90 +422,28 @@ module.exports = class ftx extends Exchange {
         }
     }
 
-    parseOrderStatus (status) {
-        const statuses = {
-            'NEW': 'open',
-            'PARTIALLY_FILLED': 'open',
-            'FILLED': 'closed',
-            'CANCELED': 'canceled',
-            'PENDING_CANCEL': 'canceling', // currently unused
-            'REJECTED': 'rejected',
-            'EXPIRED': 'expired',
-        };
-        return this.safeString (statuses, status, status);
-    }
-
     parseOrder (order, market = undefined) {
-        const status = this.parseOrderStatus (this.safeString (order, 'status'));
-        const symbol = this.findSymbol (this.safeString (order, 'symbol'), market);
-        let timestamp = undefined;
-        if ('time' in order) {
-            timestamp = this.safeInteger (order, 'time');
-        } else if ('transactTime' in order) {
-            timestamp = this.safeInteger (order, 'transactTime');
+        const time = new Date(this.safeString (order, 'createdAt')).getTime();
+        const filled = this.safeFloat (order, 'filledSize');
+        const remaining = this.safeFloat (order, 'remainingSize');
+        const id = this.safeInteger (order, 'id');
+        const symbol = this.findSymbol (this.safeString (order, 'market'));
+        const status = this.safeString (order, 'status');
+        const side = this.safeString (order, 'side');
+        const type = this.safeString (order, 'type');
+        const amount = this.safeFloat (order, 'size');
+        let price;
+        //determine if its a stop-loss order
+        if (type == 'stop') {
+            price = this.safeFloat (order, 'price');
+        } else {
+            price = this.safeFloat (order, 'triggerPrice');
         }
-        let price = this.safeFloat (order, 'price');
-        const amount = this.safeFloat (order, 'origQty');
-        const filled = this.safeFloat (order, 'executedQty');
-        let remaining = undefined;
-        let cost = this.safeFloat (order, 'cummulativeQuoteQty');
-        if (filled !== undefined) {
-            if (amount !== undefined) {
-                remaining = amount - filled;
-                if (this.options['parseOrderToPrecision']) {
-                    remaining = parseFloat (this.amountToPrecision (symbol, remaining));
-                }
-                remaining = Math.max (remaining, 0.0);
-            }
-            if (price !== undefined) {
-                if (cost === undefined) {
-                    cost = price * filled;
-                }
-            }
-        }
-        const id = this.safeString (order, 'orderId');
-        const type = this.safeStringLower (order, 'type');
-        if (type === 'market') {
-            if (price === 0.0) {
-                if ((cost !== undefined) && (filled !== undefined)) {
-                    if ((cost > 0) && (filled > 0)) {
-                        price = cost / filled;
-                    }
-                }
-            }
-        }
-        const side = this.safeStringLower (order, 'side');
-        let fee = undefined;
-        let trades = undefined;
-        const fills = this.safeValue (order, 'fills');
-        if (fills !== undefined) {
-            trades = this.parseTrades (fills, market);
-            const numTrades = trades.length;
-            if (numTrades > 0) {
-                cost = trades[0]['cost'];
-                fee = {
-                    'cost': trades[0]['fee']['cost'],
-                    'currency': trades[0]['fee']['currency'],
-                };
-                for (let i = 1; i < trades.length; i++) {
-                    cost = this.sum (cost, trades[i]['cost']);
-                    fee['cost'] = this.sum (fee['cost'], trades[i]['fee']['cost']);
-                }
-            }
-        }
-        let average = undefined;
-        if (cost !== undefined) {
-            if (filled) {
-                average = cost / filled;
-            }
-            if (this.options['parseOrderToPrecision']) {
-                cost = parseFloat (this.costToPrecision (symbol, cost));
-            }
-        }
+
         return {
             'info': order,
             'id': id,
-            'timestamp': timestamp,
+            'timestamp': time,
             'datetime': this.iso8601 (timestamp),
             'lastTradeTimestamp': undefined,
             'symbol': symbol,
@@ -513,70 +451,57 @@ module.exports = class ftx extends Exchange {
             'side': side,
             'price': price,
             'amount': amount,
-            'cost': cost,
-            'average': average,
+            'cost': undefined,
+            'average': undefined,
             'filled': filled,
             'remaining': remaining,
             'status': status,
-            'fee': fee,
-            'trades': trades,
+            'fee': undefined,
+            'trades': undefined,
         };
     }
 
-    async createOrder (symbol, type, side, amount, price = undefined, params = {}) {
+    async createOrder (symbol, type = 'market', side, amount, price = null, params = {}) {
+        // type can be a market, limit, or stop-loss
         await this.loadMarkets ();
         const market = this.market (symbol);
-        // the next 5 lines are added to support for testing orders
-        let method = 'privatePostOrder';
-        const test = this.safeValue (params, 'test', false);
-        if (test) {
-            method += 'Test';
-            params = this.omit (params, 'test');
+
+        //check side value
+        if (side !== 'buy' && side !== 'sell') {
+            throw new InvalidOrder ('Invalid order side value');
         }
-        const uppercaseType = type.toUpperCase ();
-        const newOrderRespType = this.safeValue (this.options['newOrderRespType'], type, 'RESULT');
-        const request = {
-            'symbol': market['id'],
-            'quantity': this.amountToPrecision (symbol, amount),
-            'type': uppercaseType,
-            'side': side.toUpperCase (),
-            'newOrderRespType': newOrderRespType, // 'ACK' for order id, 'RESULT' for full order or 'FULL' for order with fills
-        };
-        let timeInForceIsRequired = false;
-        let priceIsRequired = false;
-        let stopPriceIsRequired = false;
-        if (uppercaseType === 'LIMIT') {
-            priceIsRequired = true;
-            timeInForceIsRequired = true;
-        } else if ((uppercaseType === 'STOP_LOSS') || (uppercaseType === 'TAKE_PROFIT')) {
-            stopPriceIsRequired = true;
-        } else if ((uppercaseType === 'STOP_LOSS_LIMIT') || (uppercaseType === 'TAKE_PROFIT_LIMIT')) {
-            stopPriceIsRequired = true;
-            priceIsRequired = true;
-            timeInForceIsRequired = true;
-        } else if (uppercaseType === 'LIMIT_MAKER') {
-            priceIsRequired = true;
-        }
-        if (priceIsRequired) {
-            if (price === undefined) {
-                throw new InvalidOrder (this.id + ' createOrder method requires a price argument for a ' + type + ' order');
-            }
-            request['price'] = this.priceToPrecision (symbol, price);
-        }
-        if (timeInForceIsRequired) {
-            request['timeInForce'] = this.options['defaultTimeInForce']; // 'GTC' = Good To Cancel (default), 'IOC' = Immediate Or Cancel
-        }
-        if (stopPriceIsRequired) {
-            const stopPrice = this.safeFloat (params, 'stopPrice');
-            if (stopPrice === undefined) {
-                throw new InvalidOrder (this.id + ' createOrder method requires a stopPrice extra param for a ' + type + ' order');
+
+        //check order type
+        if (type == 'market' || type == 'limit') {
+            const request = {
+                'market': this.marketId (symbol),
+                'side': side,
+                'price': price,
+                'type': type,
+                'size': this.amountToPrecision (symbol, amount),
+            };
+            const response = await this.privatePostOrders (this.extend (request, params));
+            if (response.success) {
+                throw new ExchangeError ('data not returned');
             } else {
-                params = this.omit (params, 'stopPrice');
-                request['stopPrice'] = this.priceToPrecision (symbol, stopPrice);
+                return this.parseOrder (response.result);
             }
+        } else if (type == 'stop') {
+            const request = {
+                'market': this.marketId (symbol),
+                'side': side,
+                'triggerPrice': price,
+                'size': this.amountToPrecision (symbol, amount),
+            };
+            const response = await this.privatePostConditionalOrders(this.extend (request, params));
+            if (response.success) {
+                throw new ExchangeError ('data not returned');
+            } else {
+                return this.parseOrder (response.result);
+            }
+        } else {
+            throw new InvalidOrder ('Invalid order type');
         }
-        const response = await this[method] (this.extend (request, params));
-        return this.parseOrder (response, market);
     }
 
     async fetchOrder (id, symbol = undefined, params = {}) {
