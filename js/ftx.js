@@ -71,14 +71,14 @@ module.exports = class ftx extends Exchange {
                 },
                 'private': {
                     'get': [
-                        'order',
+                        'wallet/balances',
                         'openOrders',
                         'allOrders',
                         'account',
                         'myTrades',
                     ],
                     'post': [
-                        'order',
+                        'orders',
                         'order/test',
                     ],
                     'delete': [
@@ -307,42 +307,22 @@ module.exports = class ftx extends Exchange {
         }
     }
 
-    calculateFee (symbol, type, side, amount, price, takerOrMaker = 'taker', params = {}) {
-        const market = this.markets[symbol];
-        let key = 'quote';
-        const rate = market[takerOrMaker];
-        let cost = amount * rate;
-        let precision = market['precision']['price'];
-        if (side === 'sell') {
-            cost *= price;
-        } else {
-            key = 'base';
-            precision = market['precision']['amount'];
-        }
-        cost = this.decimalToPrecision (cost, ROUND, precision, this.precisionMode);
-        return {
-            'type': takerOrMaker,
-            'currency': market[key],
-            'rate': rate,
-            'cost': parseFloat (cost),
-        };
-    }
-
     async fetchBalance (params = {}) {
         await this.loadMarkets ();
-        const response = await this.privateGetAccount (params);
-        const result = { 'info': response };
-        const balances = this.safeValue (response, 'balances', []);
-        for (let i = 0; i < balances.length; i++) {
-            const balance = balances[i];
-            const currencyId = balance['asset'];
-            const code = this.safeCurrencyCode (currencyId);
-            const account = this.account ();
-            account['free'] = this.safeFloat (balance, 'free');
-            account['used'] = this.safeFloat (balance, 'locked');
-            result[code] = account;
+        const response = await this.privateGetWalletBalances (params);
+        if (response.success) {
+            const balance = {};
+            const result = this.safeValue (response, 'result', {});
+            for (let i = 0; i < result.length; i++) {
+                const code = this.safeCurrencyCode (result[i]['coin']);
+                balance[code] = {};
+                balance[code]['free'] = result[i]['free'];
+                balance[code]['total'] = result[i]['total'];
+            }
+            return this.parseBalance (balance);
+        } else {
+            throw new ExchangeError ('data not returned');
         }
-        return this.parseBalance (result);
     }
 
     parseOHLCV (ohlcv, market = undefined, timeframe = '1m', since = undefined, limit = undefined) {
@@ -634,28 +614,6 @@ module.exports = class ftx extends Exchange {
             request['limit'] = limit;
         }
         const response = await this.privateGetAllOrders (this.extend (request, params));
-        //
-        //     [
-        //         {
-        //             "symbol": "LTCBTC",
-        //             "orderId": 1,
-        //             "clientOrderId": "myOrder1",
-        //             "price": "0.1",
-        //             "origQty": "1.0",
-        //             "executedQty": "0.0",
-        //             "cummulativeQuoteQty": "0.0",
-        //             "status": "NEW",
-        //             "timeInForce": "GTC",
-        //             "type": "LIMIT",
-        //             "side": "BUY",
-        //             "stopPrice": "0.0",
-        //             "icebergQty": "0.0",
-        //             "time": 1499827319559,
-        //             "updateTime": 1499827319559,
-        //             "isWorking": true
-        //         }
-        //     ]
-        //
         return this.parseOrders (response, market, since, limit);
     }
 
@@ -846,16 +804,6 @@ module.exports = class ftx extends Exchange {
             request['startTime'] = since;
         }
         const response = await this.wapiGetDepositHistory (this.extend (request, params));
-        //
-        //     {     success:    true,
-        //       depositList: [ { insertTime:  1517425007000,
-        //                            amount:  0.3,
-        //                           address: "0x0123456789abcdef",
-        //                        addressTag: "",
-        //                              txId: "0x0123456789abcdef",
-        //                             asset: "ETH",
-        //                            status:  1                                                                    } ] }
-        //
         return this.parseTransactions (response['depositList'], currency, since, limit);
     }
 
@@ -871,27 +819,6 @@ module.exports = class ftx extends Exchange {
             request['startTime'] = since;
         }
         const response = await this.wapiGetWithdrawHistory (this.extend (request, params));
-        //
-        //     { withdrawList: [ {      amount:  14,
-        //                             address: "0x0123456789abcdef...",
-        //                         successTime:  1514489710000,
-        //                          addressTag: "",
-        //                                txId: "0x0123456789abcdef...",
-        //                                  id: "0123456789abcdef...",
-        //                               asset: "ETH",
-        //                           applyTime:  1514488724000,
-        //                              status:  6                       },
-        //                       {      amount:  7600,
-        //                             address: "0x0123456789abcdef...",
-        //                         successTime:  1515323226000,
-        //                          addressTag: "",
-        //                                txId: "0x0123456789abcdef...",
-        //                                  id: "0123456789abcdef...",
-        //                               asset: "ICN",
-        //                           applyTime:  1515322539000,
-        //                              status:  6                       }  ],
-        //            success:    true                                         }
-        //
         return this.parseTransactions (response['withdrawList'], currency, since, limit);
     }
 
@@ -918,28 +845,6 @@ module.exports = class ftx extends Exchange {
     }
 
     parseTransaction (transaction, currency = undefined) {
-        //
-        // fetchDeposits
-        //      { insertTime:  1517425007000,
-        //            amount:  0.3,
-        //           address: "0x0123456789abcdef",
-        //        addressTag: "",
-        //              txId: "0x0123456789abcdef",
-        //             asset: "ETH",
-        //            status:  1                                                                    }
-        //
-        // fetchWithdrawals
-        //
-        //       {      amount:  14,
-        //             address: "0x0123456789abcdef...",
-        //         successTime:  1514489710000,
-        //          addressTag: "",
-        //                txId: "0x0123456789abcdef...",
-        //                  id: "0123456789abcdef...",
-        //               asset: "ETH",
-        //           applyTime:  1514488724000,
-        //              status:  6                       }
-        //
         const id = this.safeString (transaction, 'id');
         const address = this.safeString (transaction, 'address');
         let tag = this.safeString (transaction, 'addressTag'); // set but unused
@@ -1007,26 +912,6 @@ module.exports = class ftx extends Exchange {
 
     async fetchFundingFees (codes = undefined, params = {}) {
         const response = await this.wapiGetAssetDetail (params);
-        //
-        //     {
-        //         "success": true,
-        //         "assetDetail": {
-        //             "CTR": {
-        //                 "minWithdrawAmount": "70.00000000", //min withdraw amount
-        //                 "depositStatus": false,//deposit status
-        //                 "withdrawFee": 35, // withdraw fee
-        //                 "withdrawStatus": true, //withdraw status
-        //                 "depositTip": "Delisted, Deposit Suspended" //reason
-        //             },
-        //             "SKY": {
-        //                 "minWithdrawAmount": "0.02000000",
-        //                 "depositStatus": true,
-        //                 "withdrawFee": 0.01,
-        //                 "withdrawStatus": true
-        //             }
-        //         }
-        //     }
-        //
         const detail = this.safeValue (response, 'assetDetail', {});
         const ids = Object.keys (detail);
         const withdrawFees = {};
@@ -1061,55 +946,6 @@ module.exports = class ftx extends Exchange {
             'info': response,
             'id': this.safeString (response, 'id'),
         };
-    }
-
-    sign (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
-        let url = this.urls['api'][api];
-        url += '/' + path;
-        if (api === 'wapi') {
-            url += '.html';
-        }
-        const userDataStream = (path === 'userDataStream');
-        if (path === 'historicalTrades') {
-            headers = {
-                'X-MBX-APIKEY': this.apiKey,
-            };
-        } else if (userDataStream) {
-            // v1 special case for userDataStream
-            body = this.urlencode (params);
-            headers = {
-                'X-MBX-APIKEY': this.apiKey,
-                'Content-Type': 'application/x-www-form-urlencoded',
-            };
-        }
-        if ((api === 'private') || (api === 'wapi' && path !== 'systemStatus')) {
-            this.checkRequiredCredentials ();
-            let query = this.urlencode (this.extend ({
-                'timestamp': this.nonce (),
-                'recvWindow': this.options['recvWindow'],
-            }, params));
-            const signature = this.hmac (this.encode (query), this.encode (this.secret));
-            query += '&' + 'signature=' + signature;
-            headers = {
-                'X-MBX-APIKEY': this.apiKey,
-            };
-            if ((method === 'GET') || (method === 'DELETE') || (api === 'wapi')) {
-                url += '?' + query;
-            } else {
-                body = query;
-                headers['Content-Type'] = 'application/x-www-form-urlencoded';
-            }
-        } else {
-            // userDataStream endpoints are public, but POST, PUT, DELETE
-            // therefore they don't accept URL query arguments
-            // https://github.com/ccxt/ccxt/issues/5224
-            if (!userDataStream) {
-                if (Object.keys (params).length) {
-                    url += '?' + this.urlencode (params);
-                }
-            }
-        }
-        return { 'url': url, 'method': method, 'body': body, 'headers': headers };
     }
 
     handleErrors (code, reason, url, method, headers, body, response) {
@@ -1179,10 +1015,10 @@ module.exports = class ftx extends Exchange {
     }
 
     sign (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
-        let request = '/' + this.implodeParams (path, params);
+        let request = '/' + this.implodeParams (path, params); //the path
         let query = this.omit (params, this.extractParams (path));
         let url = this.urls['api'][api] + request;
-        if ((api === 'public') || (path.indexOf ('/hist') >= 0)) {
+        if (api === 'public') {
             if (Object.keys (query).length) {
                 const suffix = '?' + this.urlencode (query);
                 url += suffix;
@@ -1191,20 +1027,15 @@ module.exports = class ftx extends Exchange {
         }
         if (api === 'private') {
             this.checkRequiredCredentials ();
-            const nonce = this.nonce ();
-            query = this.extend ({
-                'nonce': nonce.toString (),
-                'request': request,
-            }, query);
-            body = this.json (query);
-            query = this.encode (body);
-            const payload = this.stringToBase64 (query);
+            request = '/api' + request;
+            const tx = this.milliseconds();
+            const hmacString = tx + method + request;
             const secret = this.encode (this.secret);
-            const signature = this.hmac (payload, secret, 'sha384');
+            const signature = this.hmac (hmacString, secret, 'sha256');
             headers = {
-                'X-BFX-APIKEY': this.apiKey,
-                'X-BFX-PAYLOAD': this.decode (payload),
-                'X-BFX-SIGNATURE': signature,
+                'FTX-KEY': this.apiKey,
+                'FTX-TS': tx,
+                'FTX-SIGN': signature,
             };
         }
         return { 'url': url, 'method': method, 'body': body, 'headers': headers };
