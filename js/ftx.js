@@ -28,18 +28,17 @@ module.exports = class ftx extends Exchange {
             // new metainfo interface
             'has': {
                 'fetchDepositAddress': true,
-                'CORS': false,
                 'fetchTickers': false,
                 'fetchTicker': true,
                 'fetchOHLCV': true,
                 'fetchCurrencies': true,
-                'fetchMyTrades': true,
                 'fetchOrder': true,
-                'fetchOrders': true,
+                'fetchOrders': false,
                 'fetchOpenOrders': true,
-                'fetchClosedOrders': true,
+                'fetchClosedOrders': false,
+                'fetchL2OrderBook': false,
                 'withdraw': true,
-                'fetchFundingFees': true,
+                'fetchFundingFees': false,
                 'fetchDeposits': true,
                 'fetchWithdrawals': true,
                 'fetchTransactions': false,
@@ -74,6 +73,8 @@ module.exports = class ftx extends Exchange {
                         'wallet/balances',
                         'orders',
                         'orders/{id}',
+                        'wallet/deposit_address/{coin}',
+                        'wallet/deposits',
                         'openOrders',
                         'allOrders',
                         'account',
@@ -531,36 +532,19 @@ module.exports = class ftx extends Exchange {
         }
     }
 
-    async fetchOrders (params = {}) {
+    async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
         await this.loadMarkets ();
-        const response = await this.privateGetOrders (params);
+        const request = {};
+        if (symbol !== undefined) {
+            const market = this.market (symbol);
+            request['market'] = market.id;
+        }
+        const response = await this.privateGetOrders (this.extend (request, params));
         if (response.success) {
             return this.parseOrders (response.result);
         } else {
             throw new ExchangeError ('data not returned');
         }
-    }
-
-    async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
-        await this.loadMarkets ();
-        let market = undefined;
-        const request = {};
-        if (symbol !== undefined) {
-            market = this.market (symbol);
-            request['symbol'] = market['id'];
-        } else if (this.options['warnOnFetchOpenOrdersWithoutSymbol']) {
-            const symbols = this.symbols;
-            const numSymbols = symbols.length;
-            const fetchOpenOrdersRateLimit = parseInt (numSymbols / 2);
-            throw new ExchangeError (this.id + ' fetchOpenOrders WARNING: fetching open orders without specifying a symbol is rate-limited to one call per ' + fetchOpenOrdersRateLimit.toString () + ' seconds. Do not call this method frequently to avoid ban. Set ' + this.id + '.options["warnOnFetchOpenOrdersWithoutSymbol"] = false to suppress this warning message.');
-        }
-        const response = await this.privateGetOpenOrders (this.extend (request, params));
-        return this.parseOrders (response, market, since, limit);
-    }
-
-    async fetchClosedOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
-        const orders = await this.fetchOrders (symbol, since, limit, params);
-        return this.filterBy (orders, 'status', 'closed');
     }
 
     async cancelOrder (id, params = {}) {
@@ -587,39 +571,6 @@ module.exports = class ftx extends Exchange {
         } else {
             throw new ExchangeError ('data not returned');
         }
-    }
-
-    async fetchMyTrades (symbol = undefined, since = undefined, limit = undefined, params = {}) {
-        if (symbol === undefined) {
-            throw new ArgumentsRequired (this.id + ' fetchMyTrades requires a symbol argument');
-        }
-        await this.loadMarkets ();
-        const market = this.market (symbol);
-        const request = {
-            'symbol': market['id'],
-        };
-        if (limit !== undefined) {
-            request['limit'] = limit;
-        }
-        const response = await this.privateGetMyTrades (this.extend (request, params));
-        //
-        //     [
-        //         {
-        //             "symbol": "BNBBTC",
-        //             "id": 28457,
-        //             "orderId": 100234,
-        //             "price": "4.00000100",
-        //             "qty": "12.00000000",
-        //             "commission": "10.10000000",
-        //             "commissionAsset": "BNB",
-        //             "time": 1499865549590,
-        //             "isBuyer": true,
-        //             "isMaker": false,
-        //             "isBestMatch": true
-        //         }
-        //     ]
-        //
-        return this.parseTrades (response, market, since, limit);
     }
 
     async fetchMyDustTrades (symbol = undefined, since = undefined, limit = undefined, params = {}) {
@@ -738,8 +689,9 @@ module.exports = class ftx extends Exchange {
         if (since !== undefined) {
             request['startTime'] = since;
         }
-        const response = await this.wapiGetDepositHistory (this.extend (request, params));
-        return this.parseTransactions (response['depositList'], currency, since, limit);
+        const response = await this.privateGetWalletDeposits (this.extend (request, params));
+        return response;
+        // return this.parseTransactions (response['depositList'], currency, since, limit);
     }
 
     async fetchWithdrawals (code = undefined, since = undefined, limit = undefined, params = {}) {
@@ -827,39 +779,19 @@ module.exports = class ftx extends Exchange {
         await this.loadMarkets ();
         const currency = this.currency (code);
         const request = {
-            'asset': currency['id'],
+            'coin': currency['id'],
         };
-        const response = await this.wapiGetDepositAddress (this.extend (request, params));
-        const success = this.safeValue (response, 'success');
-        if ((success === undefined) || !success) {
-            throw new InvalidAddress (this.id + ' fetchDepositAddress returned an empty response – create the deposit address in the user settings first.');
+        console.log(request);
+        const response = await this.privateGetWalletDepositAddressCoin (this.extend (request, params));
+        if (response.success) {
+            return {
+                'address': response.address,
+                'tag': response.tag,
+                'info': response
+            }
+        } else {
+            throw new ExchangeError ('data not returned');
         }
-        const address = this.safeString (response, 'address');
-        const tag = this.safeString (response, 'addressTag');
-        this.checkAddress (address);
-        return {
-            'currency': code,
-            'address': this.checkAddress (address),
-            'tag': tag,
-            'info': response,
-        };
-    }
-
-    async fetchFundingFees (codes = undefined, params = {}) {
-        const response = await this.wapiGetAssetDetail (params);
-        const detail = this.safeValue (response, 'assetDetail', {});
-        const ids = Object.keys (detail);
-        const withdrawFees = {};
-        for (let i = 0; i < ids.length; i++) {
-            const id = ids[i];
-            const code = this.safeCurrencyCode (id);
-            withdrawFees[code] = this.safeFloat (detail[id], 'withdrawFee');
-        }
-        return {
-            'withdraw': withdrawFees,
-            'deposit': {},
-            'info': response,
-        };
     }
 
     async withdraw (code, amount, address, tag = undefined, params = {}) {
@@ -953,13 +885,12 @@ module.exports = class ftx extends Exchange {
         let request = '/' + this.implodeParams (path, params); //the path
         let query = this.omit (params, this.extractParams (path));
         let url = this.urls['api'][api] + request;
-        if (api === 'public') {
-            if (Object.keys (query).length) {
-                const suffix = '?' + this.urlencode (query);
-                url += suffix;
-                request += suffix;
-            }
+        if (Object.keys (query).length) {
+            const suffix = '?' + this.urlencode (query);
+            url += suffix;
+            request += suffix;
         }
+        console.log(request);
         if (api === 'private') {
             this.checkRequiredCredentials ();
             request = '/api' + request;
