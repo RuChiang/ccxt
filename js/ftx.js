@@ -72,6 +72,8 @@ module.exports = class ftx extends Exchange {
                 'private': {
                     'get': [
                         'wallet/balances',
+                        'orders',
+                        'orders/{id}',
                         'openOrders',
                         'allOrders',
                         'account',
@@ -82,7 +84,8 @@ module.exports = class ftx extends Exchange {
                         'conditional_orders',
                     ],
                     'delete': [
-                        'order',
+                        'orders',
+                        'orders/{id}',
                     ],
                 },
             },
@@ -422,8 +425,16 @@ module.exports = class ftx extends Exchange {
         }
     }
 
+    parseOrders (result, market = undefined) {
+        let orders = [];
+        for (let i = 0; i < result.length; i ++) {
+            orders.push (this.parseOrder (result[i]));
+        }
+        return orders;
+    }
+
     parseOrder (order, market = undefined) {
-        const time = new Date(this.safeString (order, 'createdAt')).getTime();
+        const timestamp = new Date(this.safeString (order, 'createdAt')).getTime();
         const filled = this.safeFloat (order, 'filledSize');
         const remaining = this.safeFloat (order, 'remainingSize');
         const id = this.safeInteger (order, 'id');
@@ -435,15 +446,15 @@ module.exports = class ftx extends Exchange {
         let price;
         //determine if its a stop-loss order
         if (type == 'stop') {
-            price = this.safeFloat (order, 'price');
-        } else {
             price = this.safeFloat (order, 'triggerPrice');
+        } else {
+            price = this.safeFloat (order, 'price');
         }
 
         return {
             'info': order,
             'id': id,
-            'timestamp': time,
+            'timestamp': timestamp,
             'datetime': this.iso8601 (timestamp),
             'lastTradeTimestamp': undefined,
             'symbol': symbol,
@@ -504,42 +515,30 @@ module.exports = class ftx extends Exchange {
         }
     }
 
-    async fetchOrder (id, symbol = undefined, params = {}) {
-        if (symbol === undefined) {
-            throw new ArgumentsRequired (this.id + ' fetchOrder requires a symbol argument');
+    async fetchOrder (id, params = {}) {
+        if (id === undefined) {
+            throw new ArgumentsRequired ('fetchOrder requires a id argument');
         }
         await this.loadMarkets ();
-        const market = this.market (symbol);
-        const origClientOrderId = this.safeValue (params, 'origClientOrderId');
         const request = {
-            'symbol': market['id'],
+            'id': id,
         };
-        if (origClientOrderId !== undefined) {
-            request['origClientOrderId'] = origClientOrderId;
+        const response = await this.privateGetOrdersId (this.extend (request, params));
+        if (response.success) {
+            return this.parseOrder (response.result);
         } else {
-            request['orderId'] = parseInt (id);
+            throw new ExchangeError ('data not returned');
         }
-        const response = await this.privateGetOrder (this.extend (request, params));
-        return this.parseOrder (response, market);
     }
 
-    async fetchOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
-        if (symbol === undefined) {
-            throw new ArgumentsRequired (this.id + ' fetchOrders requires a symbol argument');
-        }
+    async fetchOrders (params = {}) {
         await this.loadMarkets ();
-        const market = this.market (symbol);
-        const request = {
-            'symbol': market['id'],
-        };
-        if (since !== undefined) {
-            request['startTime'] = since;
+        const response = await this.privateGetOrders (params);
+        if (response.success) {
+            return this.parseOrders (response.result);
+        } else {
+            throw new ExchangeError ('data not returned');
         }
-        if (limit !== undefined) {
-            request['limit'] = limit;
-        }
-        const response = await this.privateGetAllOrders (this.extend (request, params));
-        return this.parseOrders (response, market, since, limit);
     }
 
     async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
@@ -564,19 +563,30 @@ module.exports = class ftx extends Exchange {
         return this.filterBy (orders, 'status', 'closed');
     }
 
-    async cancelOrder (id, symbol = undefined, params = {}) {
-        if (symbol === undefined) {
+    async cancelOrder (id, params = {}) {
+        if (id === undefined) {
             throw new ArgumentsRequired (this.id + ' cancelOrder requires a symbol argument');
         }
         await this.loadMarkets ();
-        const market = this.market (symbol);
         const request = {
-            'symbol': market['id'],
-            'orderId': parseInt (id),
-            // 'origClientOrderId': id,
+            'id': id,
         };
-        const response = await this.privateDeleteOrder (this.extend (request, params));
-        return this.parseOrder (response);
+        const response = await this.privateDeleteOrdersId (this.extend (request, params));
+        if (response.success) {
+            return response.result;
+        } else {
+            throw new ExchangeError ('data not returned');
+        }
+    }
+
+    async cancelAllOrders (params = {}) {
+        await this.loadMarkets ();
+        const response = await this.privateDeleteOrders (params);
+        if (response.success) {
+            return response.result;
+        } else {
+            throw new ExchangeError ('data not returned');
+        }
     }
 
     async fetchMyTrades (symbol = undefined, since = undefined, limit = undefined, params = {}) {
